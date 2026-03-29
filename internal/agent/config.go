@@ -35,6 +35,7 @@ type Config struct {
 	TenantID                 string
 	EnrollmentToken          string
 	ScriptsRun               string
+	WebSocketPort            string
 }
 
 func (a *Agent) ReadConfig() error {
@@ -93,6 +94,15 @@ func (a *Agent) ReadConfig() error {
 		return err
 	}
 	a.Config.NATSServers = key.String()
+
+	key, err = cfg.Section("NATS").GetKey("WebSocketPort")
+	if err == nil {
+		if _, err := strconv.Atoi(key.String()); err != nil {
+			log.Println("[ERROR]: the WebSocket port is not valid")
+			return err
+		}
+		a.Config.WebSocketPort = key.String()
+	}
 
 	key, err = cfg.Section("Agent").GetKey("Debug")
 	if err != nil {

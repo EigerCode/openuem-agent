@@ -7,111 +7,125 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/open-uem/nats"
 	openuem_runtime "github.com/open-uem/openuem-agent/internal/commands/runtime"
 )
 
-func InstallPackage(packageID string, version string, keepUpdated bool, debug bool) error {
+func InstallPackage(action nats.DeployAction, keepUpdated bool, debug bool) (string, string, error) {
 	var args []string
 
 	isCask := false
-	if strings.HasPrefix(packageID, "cask-") {
+	if strings.HasPrefix(action.PackageId, "cask-") {
 		isCask = true
-		packageID = strings.TrimPrefix(packageID, "cask-")
+		action.PackageId = strings.TrimPrefix(action.PackageId, "cask-")
 	}
-	log.Printf("[INFO]: received a request to install package %s using brew", packageID)
+	if action.PackageBrewType == "cask" {
+		isCask = true
+	}
+
+	log.Printf("[INFO]: received a request to install package %s using brew", action.PackageId)
 
 	brewPath := getBrewPath()
 
 	if isCask {
-		args = []string{"install", "--cask", packageID}
+		args = []string{"install", "--cask", action.PackageId}
 	} else {
-		args = []string{"install", packageID}
+		args = []string{"install", action.PackageId}
 	}
 
 	username, err := openuem_runtime.GetLoggedInUser()
 	if err != nil {
 		log.Printf("[ERROR]: could not find the logged in user, reason %v", err)
-		return err
+		return "", "", err
 	}
 
-	if err := openuem_runtime.RunAsUser(username, brewPath, args, false); err != nil {
-		log.Printf("[ERROR]: found and error with brew install command, reason %v", err)
-		return err
+	out, err := openuem_runtime.RunAsUserWithOutput(username, brewPath, args, false)
+	if err != nil {
+		log.Printf("[ERROR]: found and error with brew install command, reason %s", string(out))
+		return "", string(out), err
 	}
 
-	log.Printf("[INFO]: brew has installed an application: %s", packageID)
+	log.Printf("[INFO]: brew has installed an application: %s", action.PackageId)
 
-	return nil
+	return "", "", nil
 }
 
-func UpdatePackage(packageID string) error {
+func UpdatePackage(action nats.DeployAction) (string, string, error) {
 	var args []string
 
 	isCask := false
 
-	if strings.HasPrefix(packageID, "cask-") {
+	if strings.HasPrefix(action.PackageId, "cask-") {
 		isCask = true
-		packageID = strings.TrimPrefix(packageID, "cask-")
+		action.PackageId = strings.TrimPrefix(action.PackageId, "cask-")
 	}
-	log.Printf("[INFO]: received a request to upgrade package %s", packageID)
+	if action.PackageBrewType == "cask" {
+		isCask = true
+	}
+	log.Printf("[INFO]: received a request to upgrade package %s", action.PackageId)
 
 	brewPath := getBrewPath()
 
 	if isCask {
-		args = []string{"upgrade", "--force", "--cask", packageID}
+		args = []string{"upgrade", "--force", "--cask", action.PackageId}
 	} else {
-		args = []string{"upgrade", "--force", packageID}
+		args = []string{"upgrade", "--force", action.PackageId}
 	}
 
 	username, err := openuem_runtime.GetLoggedInUser()
 	if err != nil {
 		log.Printf("[ERROR]: could not find the logged in user, reason %v", err)
-		return err
+		return "", "", err
 	}
 
-	if err := openuem_runtime.RunAsUser(username, brewPath, args, false); err != nil {
-		log.Printf("[ERROR]: found and error with brew upgrade command, reason %v", err)
-		return err
+	out, err := openuem_runtime.RunAsUserWithOutput(username, brewPath, args, false)
+	if err != nil {
+		log.Printf("[ERROR]: found and error with brew upgrade command, reason %s", string(out))
+		return "", string(out), err
 	}
 
-	log.Printf("[INFO]: brew has updated an application: %s", packageID)
+	log.Printf("[INFO]: brew has updated an application: %s", action.PackageId)
 
-	return nil
+	return "", "", nil
 }
 
-func UninstallPackage(packageID string) error {
+func UninstallPackage(action nats.DeployAction) (string, string, error) {
 	var args []string
 
 	isCask := false
 
-	if strings.HasPrefix(packageID, "cask-") {
+	if strings.HasPrefix(action.PackageId, "cask-") {
 		isCask = true
-		packageID = strings.TrimPrefix(packageID, "cask-")
+		action.PackageId = strings.TrimPrefix(action.PackageId, "cask-")
 	}
-	log.Printf("[INFO]: received a request to remove package %s using brew", packageID)
+	if action.PackageBrewType == "cask" {
+		isCask = true
+	}
+	log.Printf("[INFO]: received a request to remove package %s using brew", action.PackageId)
 
 	brewPath := getBrewPath()
 
 	if isCask {
-		args = []string{"uninstall", "--force", "--cask", packageID}
+		args = []string{"uninstall", "--force", "--cask", action.PackageId}
 	} else {
-		args = []string{"uninstall", "--force", packageID}
+		args = []string{"uninstall", "--force", action.PackageId}
 	}
 
 	username, err := openuem_runtime.GetLoggedInUser()
 	if err != nil {
 		log.Printf("[ERROR]: could not find the logged in user, reason %v", err)
-		return err
+		return "", "", err
 	}
 
-	if err := openuem_runtime.RunAsUser(username, brewPath, args, false); err != nil {
-		log.Printf("[ERROR]: found and error with brew remove command, reason %v", err)
-		return err
+	out, err := openuem_runtime.RunAsUserWithOutput(username, brewPath, args, false)
+	if err != nil {
+		log.Printf("[ERROR]: found and error with brew remove command, reason %s", string(out))
+		return "", string(out), err
 	}
 
-	log.Printf("[INFO]: brew has removed an application: %s", packageID)
+	log.Printf("[INFO]: brew has removed an application: %s", action.PackageId)
 
-	return nil
+	return "", "", nil
 }
 
 func getBrewPath() string {

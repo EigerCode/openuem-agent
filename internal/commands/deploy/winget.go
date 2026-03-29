@@ -12,35 +12,43 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/open-uem/nats"
 	"github.com/open-uem/openuem-agent/internal/commands/runtime"
 	"github.com/open-uem/wingetcfg/wingetcfg"
 	"golang.org/x/sys/windows"
 )
 
-func InstallPackage(packageID string, version string, keepUpdated bool, debug bool) error {
+func InstallPackage(action nats.DeployAction, keepUpdated bool, debug bool) (string, string, error) {
 	var cmd *exec.Cmd
-	var out bytes.Buffer
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
 	wgPath, err := locateWinGet()
 	if err != nil {
 		log.Printf("[ERROR]: could not locate the winget.exe command %v", err)
-		return err
+		return "", "", err
 	}
 
-	log.Printf("[INFO]: received a request to install package %s using winget", packageID)
+	log.Printf("[INFO]: received a request to install package %s using winget", action.PackageId)
 
-	if version != "" {
-		cmd = exec.Command(wgPath, "install", packageID, "--version", version, "--scope", "machine", "--silent", "--accept-package-agreements", "--accept-source-agreements")
-	} else {
-		cmd = exec.Command(wgPath, "install", packageID, "--scope", "machine", "--silent", "--accept-package-agreements", "--accept-source-agreements")
+	// Fix 194: Remove spinner, blank lines and progress bar from output
+	// Ref: https://github.com/microsoft/winget-cli/issues/3494#issuecomment-1933874691
+	removeChars := `^.+Ô.+$|^.+\█.+$|^.+\▒.+$|^\s*$|^\s*\\\s*$|^\s*\/\s*$|^\s*\|\s*$|^\s*\-\s*$`
+
+	installCommand := fmt.Sprintf("&'%s' install %s --scope machine --silent --accept-package-agreements --accept-source-agreements | Select-String -NotMatch '%s'", wgPath, action.PackageId, removeChars)
+	if action.PackageVersion != "" {
+		installCommand = fmt.Sprintf("&'%s' install %s --version %s --scope machine --silent --accept-package-agreements --accept-source-agreements | Select-String -NotMatch '%s'", wgPath, action.PackageId, action.PackageVersion, removeChars)
 	}
 
-	cmd.Stderr = &out
+	cmd = exec.Command("Powershell", "-command", installCommand)
+
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	err = cmd.Start()
 	if err != nil {
 		log.Printf("[ERROR]: could not start winget.exe command %v", err)
-		return err
+		return "", "", err
 	}
 
 	err = runtime.SetPriorityWindows(cmd.Process.Pid, windows.IDLE_PRIORITY_CLASS)
@@ -49,44 +57,60 @@ func InstallPackage(packageID string, version string, keepUpdated bool, debug bo
 	}
 
 	if debug {
-		log.Printf("[DEBUG]: winget.exe is installing an app, using command %s %s %s %s %s %s %s %s\n", wgPath, "install", packageID, "--scope", "machine", "--silent", "--accept-package-agreements", "--accept-source-agreements")
+		log.Printf("[DEBUG]: winget.exe is installing an app, using command %s %s %s %s %s %s %s %s\n", wgPath, "install", action.PackageId, "--scope", "machine", "--silent", "--accept-package-agreements", "--accept-source-agreements")
 	}
 	err = cmd.Wait()
 	if err != nil {
+		if _, ok := err.(*exec.ExitError); !ok {
+			log.Printf("[ERROR]: there was an error running winget.exe: %v", err)
+			return "", "", err
+		}
 		errCode := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(err.Error(), "exit status "))), "0X", "0x")
 		errMessage, ok := wingetcfg.ErrorCodes[errCode]
 		if !ok {
-			errMessage = err.Error() + " " + out.String()
+			errMessage = err.Error() + " " + stderr.String()
 		}
 
 		// Package is already installed and no applicable update is found
 		if errCode == "0x8A15002B" {
-			log.Printf("[INFO]: %s cannot be updated. %s", packageID, errMessage)
+			log.Printf("[INFO]: %s cannot be updated. %s", action.PackageId, errMessage)
 			if !keepUpdated {
-				return nil
+				return "", "", nil
 			}
 		}
 
 		log.Printf("[ERROR]: there was an error running winget.exe: %v", errMessage)
-		return err
+		return stdout.String(), stderr.String(), nil
 	}
-	log.Printf("[INFO]: winget.exe has installed an application: %s", packageID)
+	log.Printf("[INFO]: winget.exe has installed an application: %s", action.PackageId)
 
-	return nil
+	return stdout.String(), stderr.String(), nil
 }
 
-func UpdatePackage(packageID string) error {
+func UpdatePackage(action nats.DeployAction) (string, string, error) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
 	wgPath, err := locateWinGet()
 	if err != nil {
 		log.Printf("[ERROR]: could not locate the winget.exe command %v", err)
-		return err
+		return "", "", err
 	}
 
-	cmd := exec.Command(wgPath, "upgrade", packageID, "--scope", "machine", "--silent", "--accept-package-agreements", "--accept-source-agreements")
+	// Fix 194: Remove spinner, blank lines and progress bar from output
+	// Ref: https://github.com/microsoft/winget-cli/issues/3494#issuecomment-1933874691
+	removeChars := `^.+Ô.+$|^.+\█.+$|^.+\▒.+$|^\s*$|^\s*\\\s*$|^\s*\/\s*$|^\s*\|\s*$|^\s*\-\s*$`
+
+	upgradeCommand := fmt.Sprintf("&'%s' upgrade %s --scope machine --silent --accept-package-agreements --accept-source-agreements | Select-String -NotMatch '%s'", wgPath, action.PackageId, removeChars)
+	cmd := exec.Command("Powershell", "-command", upgradeCommand)
+
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
 	err = cmd.Start()
 	if err != nil {
 		log.Printf("[ERROR]: could not start winget.exe command %v", err)
-		return err
+		return "", "", err
 	}
 
 	err = runtime.SetPriorityWindows(cmd.Process.Pid, windows.IDLE_PRIORITY_CLASS)
@@ -94,9 +118,14 @@ func UpdatePackage(packageID string) error {
 		log.Println("[ERROR]: could not change process priority")
 	}
 
-	log.Printf("[INFO]: winget.exe is upgrading an app, using command %s %s %s %s %s %s %s %s\n", wgPath, "install", packageID, "--scope", "machine", "--silent", "--accept-package-agreements", "--accept-source-agreements")
+	log.Printf("[INFO]: winget.exe is upgrading an app, using command %s %s %s %s %s %s %s %s\n", wgPath, "install", action.PackageId, "--scope", "machine", "--silent", "--accept-package-agreements", "--accept-source-agreements")
 	err = cmd.Wait()
 	if err != nil {
+		if _, ok := err.(*exec.ExitError); !ok {
+			log.Printf("[ERROR]: there was an error waiting for winget.exe to finish %v", err)
+			return "", "", err
+		}
+
 		errCode := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(err.Error(), "exit status "))), "0X", "0x")
 		errMessage, ok := wingetcfg.ErrorCodes[errCode]
 		if !ok {
@@ -104,27 +133,38 @@ func UpdatePackage(packageID string) error {
 		}
 
 		log.Printf("[ERROR]: there was an error waiting for winget.exe to finish %v", errMessage)
-		return err
+		return stdout.String(), stderr.String(), nil
 	}
 	log.Println("[INFO]: winget.exe has upgraded an application", wgPath)
 
-	return nil
+	return stdout.String(), stderr.String(), nil
 }
 
-func UninstallPackage(packageID string) error {
-	log.Printf("[INFO]: received a request to remove package %s using brew", packageID)
+func UninstallPackage(action nats.DeployAction) (string, string, error) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	log.Printf("[INFO]: received a request to remove package %s using winget", action.PackageId)
 
 	wgPath, err := locateWinGet()
 	if err != nil {
 		log.Printf("[ERROR]: could not locate the winget.exe command %v", err)
-		return err
+		return "", "", err
 	}
 
-	cmd := exec.Command(wgPath, "remove", packageID)
+	// Fix 194: Remove spinner, blank lines and progress bar from output
+	// Ref: https://github.com/microsoft/winget-cli/issues/3494#issuecomment-1933874691
+	removeChars := `^.+Ô.+$|^.+\█.+$|^.+\▒.+$|^\s*$|^\s*\\\s*$|^\s*\/\s*$|^\s*\|\s*$|^\s*\-\s*$`
+
+	removeCommand := fmt.Sprintf("&'%s' remove %s --all-versions | Select-String -NotMatch '%s'", wgPath, action.PackageId, removeChars)
+	cmd := exec.Command("Powershell", "-command", removeCommand)
+
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	err = cmd.Start()
 	if err != nil {
 		log.Printf("[ERROR]: could not start winget.exe command %v", err)
-		return err
+		return "", "", err
 	}
 
 	err = runtime.SetPriorityWindows(cmd.Process.Pid, windows.IDLE_PRIORITY_CLASS)
@@ -132,9 +172,13 @@ func UninstallPackage(packageID string) error {
 		log.Println("[ERROR]: could not change process priority")
 	}
 
-	log.Printf("[INFO]: winget.exe is uninstalling the app %s\n", packageID)
+	log.Printf("[INFO]: winget.exe is uninstalling the app %s\n", action.PackageId)
 	err = cmd.Wait()
 	if err != nil {
+		if _, ok := err.(*exec.ExitError); !ok {
+			log.Printf("[ERROR]: there was an error running winget.exe: %v", err)
+			return "", "", err
+		}
 		errCode := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(err.Error(), "exit status "))), "0X", "0x")
 		errMessage, ok := wingetcfg.ErrorCodes[errCode]
 		if !ok {
@@ -142,16 +186,16 @@ func UninstallPackage(packageID string) error {
 		}
 
 		if errCode == "0x8A150014" {
-			log.Printf("[INFO]: %s cannot be uninstalled. %s", packageID, errMessage)
-			return nil
+			log.Printf("[INFO]: %s cannot be uninstalled. %s", action.PackageId, errMessage)
+			return stdout.String(), stderr.String(), nil
 		}
 
-		log.Printf("[ERROR]: there was an error waiting for winget.exe to finish %v", errMessage)
-		return err
+		log.Printf("[ERROR]: there was an error running winget.exe: %v", errMessage)
+		return stdout.String(), stderr.String(), nil
 	}
 	log.Println("[INFO]: winget.exe has uninstalled an application")
 
-	return nil
+	return stdout.String(), stderr.String(), nil
 }
 
 func locateWinGet() (string, error) {
